@@ -28,11 +28,16 @@ h1 {
   font-size: 18px;
 }
 
-#score {
+.score strong {
   display: inline-block;
   min-width: 4ch;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.best-score {
+  display: inline-block;
+  margin-left: 20px;
 }
 
 canvas {
@@ -61,7 +66,8 @@ button:disabled {
   cursor: default;
 }
 
-button:focus-visible {
+button:focus-visible,
+canvas:focus-visible {
   outline: 3px solid #687b92;
   outline-offset: 4px;
 }
