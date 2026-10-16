@@ -16,6 +16,14 @@ const DUCK_WIDTH = 48;
 const DUCK_HEIGHT = 26;
 const BIRD_WIDTH = 40;
 const BIRD_HEIGHT = 26;
+const CACTUS_GAP = 8;
+const MAX_CACTUS_COUNT = 3;
+const FLIGHT_EVERY = 300;
+const FLIGHT_LENGTH = 100;
+const FLIGHT_WIDTH = 48;
+const FLIGHT_HEIGHT = 28;
+const FLIGHT_SPEED = 240;
+const TRANSFORM_DURATION = 1.35;
 const BEST_SCORE_KEY = "dino-runner-best-score";
 const dino = { y: GROUND_Y, velocityY: 0, ducking: false };
 
@@ -25,6 +33,13 @@ let elapsed = 0;
 let score = 0;
 let scoreProgress = 0;
 let duckHeld = false;
+let upHeld = false;
+let form = "dino";
+let transformTime = 0;
+let transition = null;
+let flightBlend = 0;
+let departingObstacles = [];
+let landingTime = 0;
 let bestScore = readBestScore();
 let savedBestScore = bestScore;
 let spawnTimer = 0;
@@ -55,7 +70,8 @@ function saveBestScore() {
 }
 
 function jump() {
-  if (!dino.ducking && dino.y === GROUND_Y && dino.velocityY === 0) {
+  if (!transition && form === "dino" && !dino.ducking && dino.y === GROUND_Y && dino.velocityY === 0) {
+    landingTime = 0;
     dino.velocityY = -650;
   }
 }
@@ -69,6 +85,13 @@ function startGame() {
     dino.velocityY = 0;
     dino.ducking = false;
     duckHeld = false;
+    upHeld = false;
+    form = "dino";
+    transformTime = 0;
+    transition = null;
+    flightBlend = 0;
+    departingObstacles = [];
+    landingTime = 0;
     obstacles = [];
     elapsed = 0;
     score = 0;
@@ -79,6 +102,7 @@ function startGame() {
     gameOverAt = -Infinity;
     previousTimestamp = null;
     scoreElement.textContent = "0";
+    updateModeLabel();
     state = "running";
     startButton.textContent = "진행 중";
     startButton.disabled = true;
@@ -88,8 +112,8 @@ function startGame() {
 }
 
 function collides(obstacle) {
-  const width = dino.ducking ? DUCK_WIDTH : DINO_WIDTH;
-  const height = dino.ducking ? DUCK_HEIGHT : DINO_HEIGHT;
+  const width = form === "pterosaur" ? FLIGHT_WIDTH : dino.ducking ? DUCK_WIDTH : DINO_WIDTH;
+  const height = form === "pterosaur" ? FLIGHT_HEIGHT : dino.ducking ? DUCK_HEIGHT : DINO_HEIGHT;
   const left = DINO_X + 4;
   const right = DINO_X + width - 4;
   const top = dino.y - height + 4;
@@ -98,6 +122,90 @@ function collides(obstacle) {
     right > obstacle.x &&
     top < obstacle.y &&
     bottom > obstacle.y - obstacle.height;
+}
+
+function updateModeLabel() {
+  const nextFlight = (Math.floor(score / FLIGHT_EVERY) + 1) * FLIGHT_EVERY;
+  const flightEnd = Math.floor(score / FLIGHT_EVERY) * FLIGHT_EVERY + FLIGHT_LENGTH;
+  document.getElementById("mode").textContent = transition
+    ? (form === "pterosaur" ? "이륙 중 · 잠시 후 ↑ ↓로 비행" : "착지 중 · 잠시 후 점프 · 숙이기")
+    : form === "pterosaur"
+    ? `익룡 구간 · ↑ ↓로 새 피하기 · ${flightEnd}점까지`
+    : `공룡 구간 · 다음 익룡 변신 ${nextFlight}점`;
+}
+
+function syncForm() {
+  const nextForm = score >= FLIGHT_EVERY && score % FLIGHT_EVERY < FLIGHT_LENGTH
+    ? "pterosaur" : "dino";
+  if (nextForm === form) return;
+  transition = {
+    elapsed: 0,
+    startY: dino.y,
+    targetY: nextForm === "pterosaur" ? 140 : GROUND_Y,
+    startBlend: flightBlend,
+    targetBlend: nextForm === "pterosaur" ? 1 : 0,
+    fromDuck: dino.ducking,
+    fromStride: dino.y === GROUND_Y ? Math.floor(elapsed * 12) % 2 : 0
+  };
+  form = nextForm;
+  dino.velocityY = 0;
+  dino.ducking = false;
+  upHeld = false;
+  duckHeld = false;
+  // 기존 장애물은 배경과 함께 사라지며, 변신을 마친 뒤 새 장애물을 생성합니다.
+  departingObstacles = obstacles;
+  obstacles = [];
+  spawnTimer = 0;
+  spawnInterval = 1.5;
+  transformTime = TRANSFORM_DURATION + 0.5;
+  landingTime = 0;
+  updateModeLabel();
+}
+
+function easeInOut(value) {
+  return value * value * (3 - 2 * value);
+}
+
+function lerp(start, end, amount) {
+  return start + (end - start) * amount;
+}
+
+function updateTransition(deltaTime) {
+  transition.elapsed = Math.min(TRANSFORM_DURATION, transition.elapsed + deltaTime);
+  const progress = transition.elapsed / TRANSFORM_DURATION;
+  const eased = easeInOut(progress);
+  flightBlend = lerp(transition.startBlend, transition.targetBlend, eased);
+  // 작은 상승 곡선으로 이륙과 착지를 연결하고, 양 끝에서는 속도가 0이 됩니다.
+  const lift = form === "pterosaur" ? 12 * Math.sin(Math.PI * progress) ** 2 : 0;
+  dino.y = lerp(transition.startY, transition.targetY, eased) - lift;
+  if (progress === 1) {
+    dino.y = transition.targetY;
+    flightBlend = transition.targetBlend;
+    transition = null;
+    departingObstacles = [];
+    if (form === "dino") landingTime = 0.24;
+    updateModeLabel();
+  }
+}
+
+function spawnObstacles() {
+  const flying = form === "pterosaur";
+  const bird = flying || (elapsed >= 8 && Math.random() < 0.35);
+  if (bird) {
+    obstacles.push({
+      type: "bird", x: 920,
+      y: flying ? 85 + Math.floor(Math.random() * 3) * 50 : 190,
+      width: BIRD_WIDTH, height: BIRD_HEIGHT
+    });
+    return;
+  }
+  const count = 1 + Math.floor(Math.random() * MAX_CACTUS_COUNT);
+  for (let i = 0; i < count; i += 1) {
+    obstacles.push({
+      type: "cactus", x: 920 + i * (CACTUS_WIDTH + CACTUS_GAP),
+      y: GROUND_Y, width: CACTUS_WIDTH, height: CACTUS_HEIGHT
+    });
+  }
 }
 
 function update(deltaTime, timestamp) {
@@ -110,36 +218,43 @@ function update(deltaTime, timestamp) {
     bestScore = score;
     bestScoreElement.textContent = String(bestScore);
   }
+  syncForm();
+  transformTime = Math.max(0, transformTime - deltaTime);
+  landingTime = Math.max(0, landingTime - deltaTime);
 
-  dino.velocityY += 1900 * deltaTime;
-  dino.y += dino.velocityY * deltaTime;
-  if (dino.y >= GROUND_Y && dino.velocityY >= 0) {
-    dino.y = GROUND_Y;
-    dino.velocityY = 0;
+  const wasTransforming = transition !== null;
+  if (wasTransforming) {
+    updateTransition(deltaTime);
+  } else if (form === "pterosaur") {
+    const direction = Number(duckHeld) - Number(upHeld);
+    dino.y = Math.max(30 + FLIGHT_HEIGHT, Math.min(204, dino.y + direction * FLIGHT_SPEED * deltaTime));
+  } else {
+    dino.velocityY += 1900 * deltaTime;
+    dino.y += dino.velocityY * deltaTime;
+    if (dino.y >= GROUND_Y && dino.velocityY >= 0) {
+      dino.y = GROUND_Y;
+      dino.velocityY = 0;
+    }
+    dino.ducking = duckHeld && dino.y === GROUND_Y && dino.velocityY === 0;
   }
-  dino.ducking = duckHeld && dino.y === GROUND_Y && dino.velocityY === 0;
 
   groundOffset = (groundOffset + speed * deltaTime) % 36;
+  for (const obstacle of departingObstacles) {
+    obstacle.x -= speed * deltaTime;
+  }
   for (const obstacle of obstacles) {
     obstacle.x -= speed * deltaTime;
   }
   obstacles = obstacles.filter(obstacle => obstacle.x + obstacle.width > 0);
 
-  spawnTimer += deltaTime;
+  if (!wasTransforming) spawnTimer += deltaTime;
   if (spawnTimer >= spawnInterval) {
-    const bird = elapsed >= 8 && Math.random() < 0.35;
-    obstacles.push({
-      type: bird ? "bird" : "cactus",
-      x: 920,
-      y: bird ? 190 : GROUND_Y,
-      width: bird ? BIRD_WIDTH : CACTUS_WIDTH,
-      height: bird ? BIRD_HEIGHT : CACTUS_HEIGHT
-    });
+    spawnObstacles();
     spawnTimer -= spawnInterval;
     spawnInterval = 1.3 + Math.random() * 0.6;
   }
 
-  if (obstacles.some(collides)) {
+  if (!wasTransforming && obstacles.some(collides)) {
     state = "gameover";
     gameOverAt = timestamp;
     startButton.textContent = "재시작";
@@ -148,10 +263,41 @@ function update(deltaTime, timestamp) {
   }
 }
 
+function drawMorphCharacter() {
+  const ducking = transition && form === "pterosaur" ? transition.fromDuck : dino.ducking;
+  const stride = transition && form === "pterosaur" ? transition.fromStride : 0;
+  // 각 사각형을 머리·몸통·꼬리·팔/날개·다리 순서로 대응시켜 형태를 이어 줍니다.
+  const groundParts = ducking ? [
+    [29, -26, 19, 13], [24, -21, 8, 8], [8, -21, 24, 14],
+    [0, -19, 12, 7], [0, -19, 0, 0], [25, -14, 4, 3], [28, -12, 3, 3],
+    [12, -9, 6, stride ? 5 : 9], [12, stride ? -6 : -3, 10, 3],
+    [28, -9, 6, stride ? 9 : 5], [28, stride ? -3 : -6, 10, 3],
+    [43, -16, 4, 2], [41, -23, 3, 3]
+  ] : [
+    [16, -48, 20, 16], [12, -36, 17, 12], [8, -27, 18, 16],
+    [0, -28, 12, 9], [0, -32, 5, 6], [24, -25, 9, 4], [30, -22, 3, 5],
+    [9, -13, 6, stride ? 8 : 13], [9, stride ? -8 : -3, 10, 3],
+    [21, -13, 6, stride ? 13 : 8], [21, stride ? -3 : -8, 10, 3],
+    [32, -37, 4, 2], [29, -44, 3, 3]
+  ];
+  const flap = (Math.sin(elapsed * 12) + 1) / 2;
+  const flightParts = [
+    [30, -23, 12, 12], [27, -26, 8, 5], [10, -17, 26, 10],
+    [0, -15, 14, 4], [0, -15, 0, 0], [15, -28 + 17 * flap, 8, 11], [7, -28 + 24 * flap, 10, 4],
+    [17, -9, 3, 3], [18, -6, 6, 2], [24, -9, 3, 3], [25, -6, 6, 2],
+    [39, -19, 9, 4], [35, -20, 3, 3]
+  ];
+  groundParts.forEach((part, index) => {
+    const shape = part.map((value, axis) => lerp(value, flightParts[index][axis], flightBlend));
+    ctx.fillStyle = index === groundParts.length - 1 ? "#f7f7f7" : "#45494c";
+    ctx.fillRect(DINO_X + shape[0], dino.y + shape[1], shape[2], shape[3]);
+  });
+}
+
 function drawDino() {
   const x = DINO_X;
   const top = Math.round(dino.y - DINO_HEIGHT);
-  const stride = state === "running" && dino.y === GROUND_Y
+  const stride = state === "running" && dino.y === GROUND_Y && landingTime === 0
     ? Math.floor(elapsed * 12) % 2 : 0;
 
   ctx.fillStyle = "#45494c";
@@ -211,17 +357,62 @@ function drawBird(obstacle) {
 
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const sky = [247, 247, 247].map((value, index) => Math.round(lerp(value, [226, 239, 249][index], flightBlend)));
+  ctx.fillStyle = `rgb(${sky.join(",")})`;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  ctx.globalAlpha = flightBlend * 0.25;
+  ctx.fillStyle = "#a2b6c4";
+  for (let i = 0; i < 5; i += 1) {
+    const x = ((i * 211 - elapsed * 100) % 1050 + 1050) % 1050 - 75;
+    ctx.fillRect(x, 65 + i * 29, 30 + (i % 3) * 12, 2);
+  }
+  ctx.restore();
+  const groundScreenY = GROUND_Y + flightBlend * 100;
   ctx.fillStyle = "#777c80";
-  ctx.fillRect(0, GROUND_Y, canvas.width, 2);
+  ctx.fillRect(0, groundScreenY, canvas.width, 2);
   for (let i = 0; i < 27; i += 1) {
     const x = i * 36 - groundOffset;
-    ctx.fillRect(Math.round(x), GROUND_Y + 10 + (i % 3) * 4, 4 + (i % 2) * 4, 2);
+    ctx.fillRect(Math.round(x), groundScreenY + 10 + (i % 3) * 4, 4 + (i % 2) * 4, 2);
   }
-  drawDino();
+  if (transition) {
+    ctx.save();
+    ctx.globalAlpha = 1 - easeInOut(transition.elapsed / TRANSFORM_DURATION);
+    departingObstacles.forEach(obstacle => {
+      if (obstacle.type === "bird") drawBird(obstacle);
+      else {
+        ctx.save();
+        ctx.translate(0, groundScreenY - GROUND_Y);
+        drawCactus(obstacle);
+        ctx.restore();
+      }
+    });
+    ctx.restore();
+  }
+  if (flightBlend > 0 || transition) drawMorphCharacter();
+  else {
+    ctx.save();
+    const squash = dino.y === GROUND_Y ? Math.sin(Math.PI * landingTime / 0.24) * 0.08 : 0;
+    ctx.translate(DINO_X + DINO_WIDTH / 2, dino.y);
+    ctx.scale(1 + squash, 1 - squash);
+    ctx.translate(-DINO_X - DINO_WIDTH / 2, -dino.y);
+    drawDino();
+    ctx.restore();
+  }
   obstacles.forEach(obstacle => {
     if (obstacle.type === "bird") drawBird(obstacle);
     else drawCactus(obstacle);
   });
+
+  if (state === "running" && transformTime > 0) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, transformTime / 0.3);
+    ctx.fillStyle = "#3c4043";
+    ctx.textAlign = "center";
+    ctx.font = "bold 22px Arial, sans-serif";
+    ctx.fillText(form === "pterosaur" ? "익룡으로 변신! ↑ ↓로 이동" : "공룡으로 변신! 점프 · 숙이기", 450, 50);
+    ctx.restore();
+  }
 
   if (state !== "running") {
     ctx.fillStyle = "#3c4043";
@@ -256,11 +447,17 @@ function getControlKey(event) {
 
 document.addEventListener("keydown", event => {
   const key = getControlKey(event);
+  if (state === "running" && form === "pterosaur" && (key === "ArrowUp" || key === "ArrowDown")) {
+    event.preventDefault();
+    if (key === "ArrowUp") upHeld = true;
+    else duckHeld = true;
+    return;
+  }
   if (key === "ArrowDown") {
     event.preventDefault();
     if (state === "running") {
       duckHeld = true;
-      dino.ducking = dino.y === GROUND_Y && dino.velocityY === 0;
+      dino.ducking = !transition && dino.y === GROUND_Y && dino.velocityY === 0;
     }
     return;
   }
@@ -274,6 +471,10 @@ document.addEventListener("keydown", event => {
   }
 });
 document.addEventListener("keyup", event => {
+  if (getControlKey(event) === "ArrowUp") {
+    event.preventDefault();
+    upHeld = false;
+  }
   if (getControlKey(event) === "ArrowDown") {
     event.preventDefault();
     releaseDuck();
@@ -285,6 +486,11 @@ function releaseDuck() {
   if (state === "running") dino.ducking = false;
 }
 
+function releaseControls() {
+  upHeld = false;
+  releaseDuck();
+}
+
 canvas.addEventListener("pointerdown", event => {
   event.preventDefault();
   startGame();
@@ -292,10 +498,10 @@ canvas.addEventListener("pointerdown", event => {
 startButton.addEventListener("click", startGame);
 document.addEventListener("visibilitychange", () => {
   previousTimestamp = null;
-  releaseDuck();
+  releaseControls();
   if (document.hidden) saveBestScore();
 });
-window.addEventListener("blur", releaseDuck);
+window.addEventListener("blur", releaseControls);
 window.addEventListener("pagehide", saveBestScore);
 
 canvas.focus({ preventScroll: true });
